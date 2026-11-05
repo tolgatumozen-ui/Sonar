@@ -27,7 +27,7 @@ h1{font-size:20px;margin:0;letter-spacing:.01em}
 .sub{color:var(--muted);font-size:13px;margin:2px 0 0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;gap:10px}
 canvas{display:block;width:100%;border-radius:10px;background:var(--scope)}
-#polar{aspect-ratio:1/1;max-width:100%}
+#polar{aspect-ratio:1/1;max-width:100%;background:#020806}
 #ascan{height:150px}
 .readout{display:flex;flex-wrap:wrap;gap:8px 18px;font:13px/1.4 var(--mono);color:var(--muted)}
 .readout b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
@@ -50,11 +50,11 @@ ol{margin:0;padding-left:20px;font-size:13px;color:var(--muted)}
 <main>
   <header>
     <h1>Oda Sonarı</h1>
-    <p class="sub">Telefon 20 kHz üstünde çirp çalar, yankıları dinler ve odadaki yüzeylere olan mesafeyi çizer.</p>
+    <p class="sub">Telefon 20 kHz üstünde çirp çalar, yankıları dinler ve her yankıyı radar ekranında nokta olarak gösterir.</p>
   </header>
 
   <section class="panel">
-    <canvas id="polar" width="720" height="720" aria-label="Radar ekranı"></canvas>
+    <canvas id="polar" width="800" height="800" aria-label="Radar ekranı"></canvas>
     <div class="row" style="justify-content:space-between">
       <div><div class="sub">En güçlü yankı</div><div class="big" id="best">– m</div></div>
       <div class="readout">
@@ -90,7 +90,10 @@ ol{margin:0;padding-left:20px;font-size:13px;color:var(--muted)}
       <label>Ses seviyesi <span id="volv">30%</span>
         <input id="vol" type="range" min="5" max="100" value="30">
       </label>
-      <label class="toggle"><input type="checkbox" id="motion"> Sadece hareketi göster (sabit yankıları çıkar)</label>
+      <label>Hassasiyet eşiği <span id="sensv">60%</span>
+        <input id="sens" type="range" min="30" max="90" value="60">
+      </label>
+      <label class="toggle"><input type="checkbox" id="motion"> Sadece hareketi göster (duvarları sil, hareket edenleri göster)</label>
     </div>
   </section>
 
@@ -99,7 +102,8 @@ ol{margin:0;padding-left:20px;font-size:13px;color:var(--muted)}
       <li>Telefonu alt kenarı (hoparlör ve mikrofon) duvara bakacak şekilde tut.</li>
       <li>Başlat'a bas, mikrofon ve hareket iznini ver.</li>
       <li>Birkaç saniye sabit dur, sonra yavaşça kendi etrafında dön. Radar her yönü ayrı kaydeder.</li>
-      <li>Hareket modunu açıp elini telefonun önünde salla: elin radarda görünür.</li>
+      <li>Hareket modunu açıp elini telefonun önünde salla: elin radarda nokta olarak görünür.</li>
+      <li>Yönleri ayırmak için telefonun alt kenarına kağıttan bir huni tak. Ses tek yöne gider, noktalar doğru açıda çıkar.</li>
     </ol>
   </section>
 </main>
@@ -112,17 +116,20 @@ const PERIOD = 0.1;       // saniyede 10 ölçüm
 const CHIRP = 0.005;      // 5 ms çirp
 const DR = 0.03;          // 3 cm menzil hücresi
 const BLIND = 0.25;       // doğrudan sesin kapladığı ilk 25 cm
-const BINS = 72;          // 5 derecelik yön dilimleri
+const FADE = 6;           // noktaların sönme süresi (sn)
 const BANDS = {"20-22":[20000,22000],"19-22":[19000,22000],"18-22":[18000,22000]};
 
 let ac=null, stream=null, src=null, gain=null, node=null;
 let sr=48000, P=4800, tplC=null, tplS=null, L=0;
 let block=null, bpos=0;
-let N=0, spc=0, prof=null, bg=null, disp=null, polar=null, lut=null;
-let heading=null, running=false, frames=0, lastFpsT=0, dirty=false;
+let N=0, spc=0, prof=null, bg=null, disp=null;
+let blips=[];
+let heading=null, running=false, frames=0, lastFpsT=0;
 
 function vol(){ return Number($("vol").value)/100*0.5; }
 $("vol").addEventListener("input",()=>{ $("volv").textContent=$("vol").value+"%"; if(gain) gain.gain.setTargetAtTime(vol(),ac.currentTime,0.05); });
+$("sens").addEventListener("input",()=>{ $("sensv").textContent=$("sens").value+"%"; });
+$("range").addEventListener("change",()=>{ if(!running){ setupRange(); } });
 
 function chirp(f0,f1,dur,phase){
   const n=Math.round(sr*dur), a=new Float32Array(n), k=(f1-f0)/dur;
@@ -136,22 +143,9 @@ function chirp(f0,f1,dur,phase){
 function setupRange(){
   const maxR=Number($("range").value);
   N=Math.round(maxR/DR);
-  spc=2*DR/C*sr;                    // bir hücredeki örnek sayısı
+  spc=2*DR/C*sr;
   prof=new Float32Array(N); bg=new Float32Array(N); disp=new Float32Array(N);
-  polar=new Float32Array(BINS*N);
-  buildLut();
-}
-
-function buildLut(){
-  const cv=$("polar"), S=cv.width, c=S/2, R=c-24;
-  lut=new Int32Array(S*S).fill(-1);
-  for(let y=0;y<S;y++) for(let x=0;x<S;x++){
-    const dx=x-c, dy=y-c, r=Math.hypot(dx,dy);
-    if(r>R) continue;
-    let ang=Math.atan2(dx,-dy)*180/Math.PI; if(ang<0) ang+=360;   // 0 = yukarı (kuzey)
-    const b=Math.floor(ang/(360/BINS))%BINS, ri=Math.min(N-1,Math.floor(r/R*N));
-    lut[y*S+x]=b*N+ri;
-  }
+  blips=[];
 }
 
 function msg(t,cls){ const m=$("msg"); m.textContent=t; m.className="msg"+(cls?" "+cls:""); }
@@ -205,7 +199,7 @@ function stop(){
 }
 
 $("go").addEventListener("click",()=>running?(stop(),msg("Durduruldu.")):start());
-$("clear").addEventListener("click",()=>{ if(polar) polar.fill(0); if(bg&&prof) bg.set(prof); dirty=true; });
+$("clear").addEventListener("click",()=>{ blips=[]; if(bg&&prof) bg.set(prof); });
 
 function push(chunk){
   let i=0;
@@ -217,7 +211,6 @@ function push(chunk){
 }
 
 function processBlock(){
-  // dairesel uzatma: blok periyodik olduğu için baş kısmı sona eklenir
   block.copyWithin(P,0,L);
   let peak=0, pk=0, amax=0;
   for(let k=0;k<P;k++){ const a=Math.abs(block[k]); if(a>amax) amax=a; }
@@ -228,7 +221,6 @@ function processBlock(){
     const v=sc*sc+ss*ss; env[k]=v;
     if(v>peak){ peak=v; pk=k; }
   }
-  // doğrudan gelen ses = en güçlü tepe = sıfır noktası
   const blindCells=Math.ceil(BLIND/DR);
   for(let r=0;r<N;r++){
     const a=Math.round(r*spc), b=Math.max(a+1,Math.round((r+1)*spc));
@@ -237,85 +229,145 @@ function processBlock(){
     bg[r]=bg[r]*0.97+prof[r]*0.03;
   }
   const motion=$("motion").checked;
-  let top=0, best=-1;
+  let top=0;
   for(let r=blindCells;r<N;r++){
-    const v=motion?Math.max(0,prof[r]-bg[r]):prof[r];
-    disp[r]=v; if(v>top){ top=v; best=r; }
+    const v=motion?Math.max(0,prof[r]-bg[r]*1.15):prof[r];
+    disp[r]=v; if(v>top) top=v;
   }
-  // 30 dB dinamik aralık, otomatik ölçek
-  const ref=top>0?top:1;
+  // hareket modunda çok zayıf farkları gürültü say
+  const noiseRef=motion?Math.max(top,mean(bg,blindCells)*0.5):top;
+  const ref=noiseRef>0?noiseRef:1;
   for(let r=0;r<N;r++){
     if(r<blindCells){ disp[r]=0; continue; }
     const db=10*Math.log10((disp[r]+1e-20)/ref);
     disp[r]=Math.max(0,Math.min(1,(db+30)/30));
   }
-  const b=heading==null?0:Math.floor(heading/(360/BINS))%BINS;
-  polar.set(disp,b*N);
-
-  $("best").textContent=best>=0&&top>0?((best+0.5)*DR).toFixed(2)+" m":"– m";
+  findBlips();
   $("lvl").textContent=amax>=0.98?"aşırı":(20*Math.log10(amax+1e-9)).toFixed(0)+" dB";
   if(amax>=0.98) msg("Mikrofon doyuyor. Ses seviyesini kıs.","warn");
-  frames++; dirty=true;
+  frames++;
+}
+
+function mean(a,from){ let s=0,n=0; for(let i=from;i<a.length;i++){s+=a[i];n++;} return n?s/n:0; }
+
+// yankı tepelerini radar noktalarına çevir
+function findBlips(){
+  const thr=Number($("sens").value)/100;
+  const cands=[];
+  for(let r=2;r<N-2;r++){
+    const v=disp[r];
+    if(v>=thr && v>=disp[r-1] && v>=disp[r+1] && v>=disp[r-2] && v>=disp[r+2]) cands.push([v,r]);
+  }
+  cands.sort((a,b)=>b[0]-a[0]);
+  const now=performance.now()/1000, ang=heading==null?0:heading;
+  const kept=[];
+  for(const [v,r] of cands){
+    if(kept.some(k=>Math.abs(k-r)<4)) continue;
+    kept.push(r);
+    blips.push({a:ang,d:(r+0.5)*DR,s:v,t:now});
+    if(kept.length>=5) break;
+  }
+  $("best").textContent=kept.length?((kept[0]+0.5)*DR).toFixed(2)+" m":"– m";
+  if(blips.length>800) blips.splice(0,blips.length-800);
 }
 
 function onOri(e){
   let h=null;
   if(typeof e.webkitCompassHeading==="number") h=e.webkitCompassHeading;
   else if(e.alpha!=null) h=(360-e.alpha)%360;
-  if(h!=null){ heading=h; $("hd").textContent=Math.round(h)+"°"; dirty=true; }
+  if(h!=null){ heading=h; $("hd").textContent=Math.round(h)+"°"; }
 }
 window.addEventListener("deviceorientationabsolute",onOri);
 window.addEventListener("deviceorientation",onOri);
 
-function drawPolar(){
-  const cv=$("polar"), g=cv.getContext("2d"), S=cv.width, c=S/2, R=c-24;
-  const img=g.createImageData(S,S), d=img.data;
-  for(let p=0,q=0;p<lut.length;p++,q+=4){
-    const idx=lut[p];
-    if(idx<0){ d[q]=6;d[q+1]=16;d[q+2]=13;d[q+3]=255; continue; }
-    const v=polar[idx];
-    d[q]=8+v*90; d[q+1]=20+v*235; d[q+2]=16+v*160; d[q+3]=255;
-  }
-  g.putImageData(img,0,0);
-  g.strokeStyle="#1d3a31"; g.lineWidth=2; g.fillStyle="#7fbfa8"; g.font="22px ui-monospace,monospace";
-  const maxR=N*DR;
-  for(let m=1;m<=maxR;m++){
+const PH="63,255,160"; // fosfor yeşili
+
+function drawPolar(now){
+  const cv=$("polar"), g=cv.getContext("2d"), S=cv.width, c=S/2, R=c-40;
+  g.fillStyle="#020806"; g.fillRect(0,0,S,S);
+  const grd=g.createRadialGradient(c,c,0,c,c,R);
+  grd.addColorStop(0,"#0a2219"); grd.addColorStop(1,"#030c09");
+  g.fillStyle=grd; g.beginPath(); g.arc(c,c,R,0,Math.PI*2); g.fill();
+
+  // halkalar ve yön çizgileri
+  const maxR=N*DR, step=maxR>5.5?2:1;
+  g.strokeStyle="rgba("+PH+",.18)"; g.lineWidth=1.5;
+  g.fillStyle="rgba("+PH+",.55)"; g.font="20px ui-monospace,monospace"; g.textAlign="left";
+  for(let m=step;m<=maxR+1e-6;m+=step){
     const rr=m/maxR*R; g.beginPath(); g.arc(c,c,rr,0,Math.PI*2); g.stroke();
-    g.fillText(m+" m",c+4,c-rr-4);
+    g.fillText(m+" m",c+6,c-rr+20);
   }
+  g.beginPath(); g.arc(c,c,R,0,Math.PI*2); g.strokeStyle="rgba("+PH+",.45)"; g.lineWidth=2.5; g.stroke();
+  g.textAlign="center"; g.textBaseline="middle";
+  for(let d=0;d<360;d+=10){
+    const a=d*Math.PI/180, l=d%30?8:16, sx=Math.sin(a), sy=-Math.cos(a);
+    g.strokeStyle="rgba("+PH+",.45)"; g.lineWidth=d%30?1:2;
+    g.beginPath(); g.moveTo(c+sx*R,c+sy*R); g.lineTo(c+sx*(R-l),c+sy*(R-l)); g.stroke();
+    if(d%30===0){
+      g.fillStyle="rgba("+PH+",.7)";
+      g.fillText(d===0?"K":d===90?"D":d===180?"G":d===270?"B":String(d),c+sx*(R+22),c+sy*(R+22));
+    }
+  }
+  g.strokeStyle="rgba("+PH+",.12)"; g.lineWidth=1;
   g.beginPath(); g.moveTo(c,c-R); g.lineTo(c,c+R); g.moveTo(c-R,c); g.lineTo(c+R,c); g.stroke();
-  g.fillText("K",c-7,20);
-  if(heading!=null){
-    const a=heading*Math.PI/180;
-    g.strokeStyle="#3fcf9f"; g.lineWidth=4; g.beginPath(); g.moveTo(c,c); g.lineTo(c+Math.sin(a)*R,c-Math.cos(a)*R); g.stroke();
+
+  // tarama çizgisi ve arkasındaki parıltı
+  const ha=((heading==null?0:heading)-90)*Math.PI/180;
+  const trail=Math.PI/5;
+  for(let i=0;i<24;i++){
+    const a0=ha-trail*(i+1)/24, a1=ha-trail*i/24;
+    g.fillStyle="rgba("+PH+","+(0.16*(1-i/24)).toFixed(3)+")";
+    g.beginPath(); g.moveTo(c,c); g.arc(c,c,R,a0,a1); g.closePath(); g.fill();
   }
-  g.fillStyle="#e2ebe7"; g.beginPath(); g.arc(c,c,7,0,Math.PI*2); g.fill();
+  g.strokeStyle="rgba("+PH+",.9)"; g.lineWidth=3;
+  g.beginPath(); g.moveTo(c,c); g.lineTo(c+Math.cos(ha)*R,c+Math.sin(ha)*R); g.stroke();
+
+  // noktalar
+  g.save(); g.globalCompositeOperation="lighter";
+  for(let i=blips.length-1;i>=0;i--){
+    const b=blips[i], age=now-b.t;
+    if(age>FADE){ blips.splice(i,1); continue; }
+    if(b.d>maxR) continue;
+    const life=1-age/FADE, a=(b.a-90)*Math.PI/180, rr=b.d/maxR*R;
+    const x=c+Math.cos(a)*rr, y=c+Math.sin(a)*rr;
+    const rad=4+b.s*8, alpha=Math.min(1,0.25+b.s)*life*life;
+    const glow=g.createRadialGradient(x,y,0,x,y,rad*2.4);
+    glow.addColorStop(0,"rgba(200,255,225,"+alpha.toFixed(3)+")");
+    glow.addColorStop(0.35,"rgba("+PH+","+(alpha*0.8).toFixed(3)+")");
+    glow.addColorStop(1,"rgba("+PH+",0)");
+    g.fillStyle=glow; g.beginPath(); g.arc(x,y,rad*2.4,0,Math.PI*2); g.fill();
+  }
+  g.restore();
+  g.fillStyle="rgba(220,255,235,.95)"; g.beginPath(); g.arc(c,c,6,0,Math.PI*2); g.fill();
+  g.textAlign="left"; g.textBaseline="alphabetic";
 }
 
 function drawAscan(){
   const cv=$("ascan"), g=cv.getContext("2d"), W=cv.width, H=cv.height, pad=36;
-  g.fillStyle="#06100d"; g.fillRect(0,0,W,H);
-  g.strokeStyle="#1d3a31"; g.lineWidth=2; g.fillStyle="#7fbfa8"; g.font="22px ui-monospace,monospace";
+  g.fillStyle="#020806"; g.fillRect(0,0,W,H);
+  g.strokeStyle="rgba("+PH+",.15)"; g.lineWidth=2; g.fillStyle="rgba("+PH+",.6)"; g.font="22px ui-monospace,monospace";
   const maxR=N*DR;
-  for(let m=0;m<=maxR+1e-6;m+=maxR>5?2:1){
+  for(let m=0;m<=maxR+1e-6;m+=maxR>5.5?2:1){
     const x=m/maxR*W; g.beginPath(); g.moveTo(x,0); g.lineTo(x,H-pad); g.stroke();
     g.fillText(m+" m",Math.min(x+4,W-60),H-10);
   }
+  const thr=Number($("sens").value)/100, ty=(H-pad)-thr*(H-pad-10);
+  g.setLineDash([8,8]); g.strokeStyle="rgba("+PH+",.35)"; g.beginPath(); g.moveTo(0,ty); g.lineTo(W,ty); g.stroke(); g.setLineDash([]);
   g.beginPath();
   for(let r=0;r<N;r++){ const x=(r+0.5)/N*W, y=(H-pad)-disp[r]*(H-pad-10); r?g.lineTo(x,y):g.moveTo(x,y); }
   g.lineTo(W,H-pad); g.lineTo(0,H-pad); g.closePath();
-  g.fillStyle="rgba(63,207,159,.25)"; g.fill();
-  g.strokeStyle="#3fcf9f"; g.lineWidth=3; g.beginPath();
+  g.fillStyle="rgba("+PH+",.18)"; g.fill();
+  g.strokeStyle="rgba("+PH+",.95)"; g.lineWidth=3; g.beginPath();
   for(let r=0;r<N;r++){ const x=(r+0.5)/N*W, y=(H-pad)-disp[r]*(H-pad-10); r?g.lineTo(x,y):g.moveTo(x,y); }
   g.stroke();
 }
 
 function loop(t){
-  if(dirty&&lut){ drawPolar(); drawAscan(); dirty=false; }
+  drawPolar(t/1000); drawAscan();
   if(running&&t-lastFpsT>1000){ $("fps").textContent=Math.round(frames*1000/(t-lastFpsT))+"/sn"; frames=0; lastFpsT=t; }
   requestAnimationFrame(loop);
 }
-setupRange(); dirty=true; requestAnimationFrame(loop);
+setupRange(); requestAnimationFrame(loop);
 </script>
 </body>
 </html>
