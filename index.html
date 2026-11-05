@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Oda Sonarı</title>
+<style>
+/* Layout: tek sütun, üstte radar ekranı, altında yankı grafiği ve ayarlar */
+:root{
+  --bg:#eef2f0; --panel:#ffffff; --fg:#14201c; --muted:#5a6a64; --line:#d3dcd8;
+  --accent:#0d7a5b; --warn:#a65a14; --bad:#b3261e;
+  --scope:#06100d; --scope-line:#1d3a31; --scope-text:#7fbfa8;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#0b1210; --panel:#121b18; --fg:#e2ebe7; --muted:#8ea19a; --line:#24322d;
+        --accent:#3fcf9f; --warn:#e3a35e; --bad:#f08a80; color-scheme:dark}
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);
+  padding:max(12px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(24px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+main{max-width:560px;margin:0 auto;display:grid;gap:14px}
+h1{font-size:20px;margin:0;letter-spacing:.01em}
+.sub{color:var(--muted);font-size:13px;margin:2px 0 0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;gap:10px}
+canvas{display:block;width:100%;border-radius:10px;background:var(--scope)}
+#polar{aspect-ratio:1/1;max-width:100%}
+#ascan{height:150px}
+.readout{display:flex;flex-wrap:wrap;gap:8px 18px;font:13px/1.4 var(--mono);color:var(--muted)}
+.readout b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.big{font:600 28px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+label{font-size:13px;color:var(--muted);display:grid;gap:4px;flex:1 1 140px;min-width:0}
+select,input[type=range]{width:100%}
+select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)}
+button{font:600 16px var(--sans);padding:12px 18px;border-radius:10px;border:0;cursor:pointer;
+  background:var(--accent);color:#fff;flex:1 1 auto}
+button.sec{background:transparent;color:var(--fg);border:1px solid var(--line);font-weight:500;flex:0 1 auto}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.msg{font-size:13px;margin:0;color:var(--muted)}
+.msg.warn{color:var(--warn)} .msg.bad{color:var(--bad)}
+.toggle{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg);flex:1 1 100%}
+ol{margin:0;padding-left:20px;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Oda Sonarı</h1>
+    <p class="sub">Telefon 20 kHz üstünde çirp çalar, yankıları dinler ve odadaki yüzeylere olan mesafeyi çizer.</p>
+  </header>
+
+  <section class="panel">
+    <canvas id="polar" width="720" height="720" aria-label="Radar ekranı"></canvas>
+    <div class="row" style="justify-content:space-between">
+      <div><div class="sub">En güçlü yankı</div><div class="big" id="best">– m</div></div>
+      <div class="readout">
+        <span>Yön <b id="hd">–</b></span>
+        <span>Mikrofon <b id="lvl">–</b></span>
+        <span>Ölçüm <b id="fps">–</b></span>
+      </div>
+    </div>
+    <canvas id="ascan" width="1000" height="300" aria-label="Mesafeye göre yankı gücü"></canvas>
+    <p class="msg" id="msg">Başlamak için düğmeye bas. Kulaklığı çıkar, ses telefonun hoparlöründen çıkmalı.</p>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <button id="go">Başlat</button>
+      <button class="sec" id="clear">Haritayı temizle</button>
+    </div>
+    <div class="row">
+      <label>Frekans bandı
+        <select id="band">
+          <option value="20-22" selected>20–22 kHz (duyulmaz)</option>
+          <option value="19-22">19–22 kHz (daha keskin)</option>
+          <option value="18-22">18–22 kHz (en keskin, duyulabilir)</option>
+        </select>
+      </label>
+      <label>Menzil
+        <select id="range">
+          <option value="3">3 m</option>
+          <option value="5" selected>5 m</option>
+          <option value="8">8 m</option>
+        </select>
+      </label>
+      <label>Ses seviyesi <span id="volv">30%</span>
+        <input id="vol" type="range" min="5" max="100" value="30">
+      </label>
+      <label class="toggle"><input type="checkbox" id="motion"> Sadece hareketi göster (sabit yankıları çıkar)</label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <ol>
+      <li>Telefonu alt kenarı (hoparlör ve mikrofon) duvara bakacak şekilde tut.</li>
+      <li>Başlat'a bas, mikrofon ve hareket iznini ver.</li>
+      <li>Birkaç saniye sabit dur, sonra yavaşça kendi etrafında dön. Radar her yönü ayrı kaydeder.</li>
+      <li>Hareket modunu açıp elini telefonun önünde salla: elin radarda görünür.</li>
+    </ol>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const C = 343;            // ses hızı m/s
+const PERIOD = 0.1;       // saniyede 10 ölçüm
+const CHIRP = 0.005;      // 5 ms çirp
+const DR = 0.03;          // 3 cm menzil hücresi
+const BLIND = 0.25;       // doğrudan sesin kapladığı ilk 25 cm
+const BINS = 72;          // 5 derecelik yön dilimleri
+const BANDS = {"20-22":[20000,22000],"19-22":[19000,22000],"18-22":[18000,22000]};
+
+let ac=null, stream=null, src=null, gain=null, node=null;
+let sr=48000, P=4800, tplC=null, tplS=null, L=0;
+let block=null, bpos=0;
+let N=0, spc=0, prof=null, bg=null, disp=null, polar=null, lut=null;
+let heading=null, running=false, frames=0, lastFpsT=0, dirty=false;
+
+function vol(){ return Number($("vol").value)/100*0.5; }
+$("vol").addEventListener("input",()=>{ $("volv").textContent=$("vol").value+"%"; if(gain) gain.gain.setTargetAtTime(vol(),ac.currentTime,0.05); });
+
+function chirp(f0,f1,dur,phase){
+  const n=Math.round(sr*dur), a=new Float32Array(n), k=(f1-f0)/dur;
+  for(let i=0;i<n;i++){
+    const t=i/sr, w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));
+    a[i]=Math.sin(2*Math.PI*(f0*t+0.5*k*t*t)+phase)*w;
+  }
+  return a;
+}
+
+function setupRange(){
+  const maxR=Number($("range").value);
+  N=Math.round(maxR/DR);
+  spc=2*DR/C*sr;                    // bir hücredeki örnek sayısı
+  prof=new Float32Array(N); bg=new Float32Array(N); disp=new Float32Array(N);
+  polar=new Float32Array(BINS*N);
+  buildLut();
+}
+
+function buildLut(){
+  const cv=$("polar"), S=cv.width, c=S/2, R=c-24;
+  lut=new Int32Array(S*S).fill(-1);
+  for(let y=0;y<S;y++) for(let x=0;x<S;x++){
+    const dx=x-c, dy=y-c, r=Math.hypot(dx,dy);
+    if(r>R) continue;
+    let ang=Math.atan2(dx,-dy)*180/Math.PI; if(ang<0) ang+=360;   // 0 = yukarı (kuzey)
+    const b=Math.floor(ang/(360/BINS))%BINS, ri=Math.min(N-1,Math.floor(r/R*N));
+    lut[y*S+x]=b*N+ri;
+  }
+}
+
+function msg(t,cls){ const m=$("msg"); m.textContent=t; m.className="msg"+(cls?" "+cls:""); }
+
+async function start(){
+  try{
+    if(typeof DeviceOrientationEvent!=="undefined" && typeof DeviceOrientationEvent.requestPermission==="function"){
+      try{ await DeviceOrientationEvent.requestPermission(); }catch(e){}
+    }
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+      msg("Bu tarayıcı mikrofona izin vermiyor. Sayfayı https adresinden Chrome ile aç.","bad"); return;
+    }
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+    ac=new AudioContext({sampleRate:48000,latencyHint:"interactive"});
+    sr=ac.sampleRate; P=Math.round(sr*PERIOD);
+    const [f0,f1]=BANDS[$("band").value];
+    tplC=chirp(f0,f1,CHIRP,0); tplS=chirp(f0,f1,CHIRP,Math.PI/2); L=tplC.length;
+
+    const buf=ac.createBuffer(1,P,sr); buf.getChannelData(0).set(tplC);
+    src=ac.createBufferSource(); src.buffer=buf; src.loop=true;
+    gain=ac.createGain(); gain.gain.value=vol();
+    src.connect(gain).connect(ac.destination);
+
+    const code="class R extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('rec',R);";
+    await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([code],{type:"application/javascript"})));
+    const mic=ac.createMediaStreamSource(stream);
+    node=new AudioWorkletNode(ac,"rec");
+    const mute=ac.createGain(); mute.gain.value=0;
+    mic.connect(node).connect(mute).connect(ac.destination);
+
+    block=new Float32Array(P+L); bpos=0;
+    setupRange();
+    node.port.onmessage=e=>push(e.data);
+    src.start();
+    running=true; lastFpsT=performance.now(); frames=0;
+    $("go").textContent="Durdur"; $("band").disabled=true; $("range").disabled=true;
+    msg(sr!==48000?`Örnekleme hızı ${sr} Hz. Ölçüm çalışıyor.`:"Ölçüm çalışıyor. Birkaç saniye sabit dur.");
+  }catch(e){
+    msg("Başlatılamadı: "+(e&&e.name==="NotAllowedError"?"mikrofon izni verilmedi.":(e&&e.message||e)),"bad");
+    stop();
+  }
+}
+
+function stop(){
+  running=false;
+  try{ src&&src.stop(); }catch(e){}
+  try{ ac&&ac.close(); }catch(e){}
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  ac=src=gain=node=stream=null;
+  $("go").textContent="Başlat"; $("band").disabled=false; $("range").disabled=false;
+}
+
+$("go").addEventListener("click",()=>running?(stop(),msg("Durduruldu.")):start());
+$("clear").addEventListener("click",()=>{ if(polar) polar.fill(0); if(bg&&prof) bg.set(prof); dirty=true; });
+
+function push(chunk){
+  let i=0;
+  while(i<chunk.length){
+    const n=Math.min(chunk.length-i,P-bpos);
+    block.set(chunk.subarray(i,i+n),bpos); bpos+=n; i+=n;
+    if(bpos===P){ processBlock(); bpos=0; }
+  }
+}
+
+function processBlock(){
+  // dairesel uzatma: blok periyodik olduğu için baş kısmı sona eklenir
+  block.copyWithin(P,0,L);
+  let peak=0, pk=0, amax=0;
+  for(let k=0;k<P;k++){ const a=Math.abs(block[k]); if(a>amax) amax=a; }
+  const env=new Float32Array(P);
+  for(let k=0;k<P;k++){
+    let sc=0, ss=0;
+    for(let i=0;i<L;i++){ const x=block[k+i]; sc+=x*tplC[i]; ss+=x*tplS[i]; }
+    const v=sc*sc+ss*ss; env[k]=v;
+    if(v>peak){ peak=v; pk=k; }
+  }
+  // doğrudan gelen ses = en güçlü tepe = sıfır noktası
+  const blindCells=Math.ceil(BLIND/DR);
+  for(let r=0;r<N;r++){
+    const a=Math.round(r*spc), b=Math.max(a+1,Math.round((r+1)*spc));
+    let m=0; for(let k=a;k<b;k++){ const v=env[(pk+k)%P]; if(v>m) m=v; }
+    prof[r]=prof[r]*0.6+m*0.4;
+    bg[r]=bg[r]*0.97+prof[r]*0.03;
+  }
+  const motion=$("motion").checked;
+  let top=0, best=-1;
+  for(let r=blindCells;r<N;r++){
+    const v=motion?Math.max(0,prof[r]-bg[r]):prof[r];
+    disp[r]=v; if(v>top){ top=v; best=r; }
+  }
+  // 30 dB dinamik aralık, otomatik ölçek
+  const ref=top>0?top:1;
+  for(let r=0;r<N;r++){
+    if(r<blindCells){ disp[r]=0; continue; }
+    const db=10*Math.log10((disp[r]+1e-20)/ref);
+    disp[r]=Math.max(0,Math.min(1,(db+30)/30));
+  }
+  const b=heading==null?0:Math.floor(heading/(360/BINS))%BINS;
+  polar.set(disp,b*N);
+
+  $("best").textContent=best>=0&&top>0?((best+0.5)*DR).toFixed(2)+" m":"– m";
+  $("lvl").textContent=amax>=0.98?"aşırı":(20*Math.log10(amax+1e-9)).toFixed(0)+" dB";
+  if(amax>=0.98) msg("Mikrofon doyuyor. Ses seviyesini kıs.","warn");
+  frames++; dirty=true;
+}
+
+function onOri(e){
+  let h=null;
+  if(typeof e.webkitCompassHeading==="number") h=e.webkitCompassHeading;
+  else if(e.alpha!=null) h=(360-e.alpha)%360;
+  if(h!=null){ heading=h; $("hd").textContent=Math.round(h)+"°"; dirty=true; }
+}
+window.addEventListener("deviceorientationabsolute",onOri);
+window.addEventListener("deviceorientation",onOri);
+
+function drawPolar(){
+  const cv=$("polar"), g=cv.getContext("2d"), S=cv.width, c=S/2, R=c-24;
+  const img=g.createImageData(S,S), d=img.data;
+  for(let p=0,q=0;p<lut.length;p++,q+=4){
+    const idx=lut[p];
+    if(idx<0){ d[q]=6;d[q+1]=16;d[q+2]=13;d[q+3]=255; continue; }
+    const v=polar[idx];
+    d[q]=8+v*90; d[q+1]=20+v*235; d[q+2]=16+v*160; d[q+3]=255;
+  }
+  g.putImageData(img,0,0);
+  g.strokeStyle="#1d3a31"; g.lineWidth=2; g.fillStyle="#7fbfa8"; g.font="22px ui-monospace,monospace";
+  const maxR=N*DR;
+  for(let m=1;m<=maxR;m++){
+    const rr=m/maxR*R; g.beginPath(); g.arc(c,c,rr,0,Math.PI*2); g.stroke();
+    g.fillText(m+" m",c+4,c-rr-4);
+  }
+  g.beginPath(); g.moveTo(c,c-R); g.lineTo(c,c+R); g.moveTo(c-R,c); g.lineTo(c+R,c); g.stroke();
+  g.fillText("K",c-7,20);
+  if(heading!=null){
+    const a=heading*Math.PI/180;
+    g.strokeStyle="#3fcf9f"; g.lineWidth=4; g.beginPath(); g.moveTo(c,c); g.lineTo(c+Math.sin(a)*R,c-Math.cos(a)*R); g.stroke();
+  }
+  g.fillStyle="#e2ebe7"; g.beginPath(); g.arc(c,c,7,0,Math.PI*2); g.fill();
+}
+
+function drawAscan(){
+  const cv=$("ascan"), g=cv.getContext("2d"), W=cv.width, H=cv.height, pad=36;
+  g.fillStyle="#06100d"; g.fillRect(0,0,W,H);
+  g.strokeStyle="#1d3a31"; g.lineWidth=2; g.fillStyle="#7fbfa8"; g.font="22px ui-monospace,monospace";
+  const maxR=N*DR;
+  for(let m=0;m<=maxR+1e-6;m+=maxR>5?2:1){
+    const x=m/maxR*W; g.beginPath(); g.moveTo(x,0); g.lineTo(x,H-pad); g.stroke();
+    g.fillText(m+" m",Math.min(x+4,W-60),H-10);
+  }
+  g.beginPath();
+  for(let r=0;r<N;r++){ const x=(r+0.5)/N*W, y=(H-pad)-disp[r]*(H-pad-10); r?g.lineTo(x,y):g.moveTo(x,y); }
+  g.lineTo(W,H-pad); g.lineTo(0,H-pad); g.closePath();
+  g.fillStyle="rgba(63,207,159,.25)"; g.fill();
+  g.strokeStyle="#3fcf9f"; g.lineWidth=3; g.beginPath();
+  for(let r=0;r<N;r++){ const x=(r+0.5)/N*W, y=(H-pad)-disp[r]*(H-pad-10); r?g.lineTo(x,y):g.moveTo(x,y); }
+  g.stroke();
+}
+
+function loop(t){
+  if(dirty&&lut){ drawPolar(); drawAscan(); dirty=false; }
+  if(running&&t-lastFpsT>1000){ $("fps").textContent=Math.round(frames*1000/(t-lastFpsT))+"/sn"; frames=0; lastFpsT=t; }
+  requestAnimationFrame(loop);
+}
+setupRange(); dirty=true; requestAnimationFrame(loop);
+</script>
+</body>
+</html>
